@@ -6,7 +6,7 @@ from enum import Enum
 from random import random
 from typing import Optional, List
 
-import websockets as ws
+import aiohttp
 
 from .client import AsyncClient
 from .exceptions import BinanceWebsocketUnableToConnect
@@ -31,7 +31,8 @@ class ReconnectingWebsocket:
     NO_MESSAGE_RECONNECT_TIMEOUT = 60
 
     def __init__(
-        self, loop, url: str, path: Optional[str] = None, prefix: str = 'ws/', is_binary: bool = False, exit_coro=None
+        self, loop, url: str, path: Optional[str] = None, prefix: str = 'ws/', is_binary: bool = False, exit_coro=None,
+        proxy=None
     ):
         self._loop = loop or asyncio.get_event_loop()
         self._log = logging.getLogger(__name__)
@@ -46,6 +47,7 @@ class ReconnectingWebsocket:
         self.ws = None
         self.ws_state = WSListenerState.INITIALISING
         self.reconnect_handle = None
+        self._proxy = proxy
 
     async def __aenter__(self):
         await self.connect()
@@ -56,7 +58,7 @@ class ReconnectingWebsocket:
             await self._exit_coro(self._path)
         self.ws_state = WSListenerState.EXITING
         if self.ws:
-            self.ws.fail_connection()
+            self.ws.close()
         if self._conn:
             await self._conn.__aexit__(exc_type, exc_val, exc_tb)
         self.ws = None
@@ -65,7 +67,10 @@ class ReconnectingWebsocket:
         await self._before_connect()
         assert self._path
         ws_url = self._url + self._prefix + self._path
-        self._conn = ws.connect(ws_url)
+        kwargs = {'url': ws_url}
+        if self._proxy:
+            kwargs['proxy'] = self._proxy
+        self._conn = aiohttp.ClientSession().ws_connect(**kwargs)
         self.ws = await self._conn.__aenter__()
         self.ws_state = WSListenerState.STREAMING
         self._reconnects = 0
