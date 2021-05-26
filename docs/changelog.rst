@@ -1,6 +1,51 @@
 Changelog
 =========
 
+v1.0.10 - 2021-05-13
+^^^^^^^^^^^^^^^^^^^^
+
+**Added**
+
+- futures multi-asset margin mode endpoints
+- optional symbol param to get_all_tickers
+
+**Fixed**
+
+- start_multiplex_socket remove lower case filter on stream names
+
+v1.0.9 - 2021-05-12
+^^^^^^^^^^^^^^^^^^^
+
+**Fixed**
+
+- start_book_ticker_socket and start_multiplex_socket to call correct async function
+
+v1.0.8 - 2021-05-11
+^^^^^^^^^^^^^^^^^^^
+
+**Added**
+
+- old style websocket and depth cache managers as option without interacting with asyncio
+
+**Fixed**
+
+- fixed issue with get_historical_klines in Client
+- remove print debug line
+
+v1.0.7
+^^^^^^
+
+**Fixed**
+
+- remove version param from get_sub_account_assets
+
+v1.0.6
+^^^^^^
+
+**Fixed**
+
+- fix time for authenticated stream keepalive
+
 v1.0.5
 ^^^^^^
 

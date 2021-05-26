@@ -539,7 +539,7 @@ class Client(BaseClient):
 
     # Market Data Endpoints
 
-    def get_all_tickers(self) -> Dict:
+    def get_all_tickers(self, symbol: Optional[str] = None) -> Dict:
         """Latest price for a symbol or symbols.
 
         https://binance-docs.github.io/apidocs/spot/en/#symbol-price-ticker
@@ -565,7 +565,10 @@ class Client(BaseClient):
         :raises: BinanceRequestException, BinanceAPIException
 
         """
-        return self._get('ticker/price', version=self.PRIVATE_API_VERSION)
+        params = {}
+        if symbol:
+            params['symbol'] = symbol
+        return self._get('ticker/price', version=self.PRIVATE_API_VERSION, data=params)
 
     def get_orderbook_tickers(self) -> Dict:
         """Best price/qty on the order book for all symbols.
@@ -1068,7 +1071,7 @@ class Client(BaseClient):
         idx = 0
         while True:
             # fetch the klines from start_ts up to max 500 entries or the end_ts if set
-            output_data = self.get_klines(
+            output_data = self._klines(
                 klines_type=klines_type,
                 symbol=symbol,
                 interval=interval,
@@ -2643,7 +2646,7 @@ class Client(BaseClient):
 
         raise Exception("There is no entry with withdraw id", result)
 
-    def get_deposit_address(self, **params):
+    def get_deposit_address(self, coin: str, network: Optional[str] = None, **params):
         """Fetch a deposit address for a symbol
 
         https://binance-docs.github.io/apidocs/spot/en/#deposit-address-supporting-network-user_data
@@ -2669,6 +2672,9 @@ class Client(BaseClient):
         :raises: BinanceRequestException, BinanceAPIException
 
         """
+        params['coin'] = coin
+        if network:
+            params['network'] = network
         return self._request_margin_api('get', 'capital/deposit/address', True, data=params)
 
     # User Stream Endpoints
@@ -4378,7 +4384,7 @@ class Client(BaseClient):
         :raises: BinanceRequestException, BinanceAPIException
 
         """
-        return self._request_margin_api('get', 'sub-account/assets', True, data=params, version='v3')
+        return self._request_margin_api('get', 'sub-account/assets', True, data=params)
 
     def query_subaccount_spot_summary(self, **params):
         """Query Sub-account Spot Assets Summary (For Master Account)
@@ -5433,6 +5439,25 @@ class Client(BaseClient):
 
         """
         return self._request_futures_api('get', 'positionSide/dual', True, data=params)
+
+    def futures_change_multi_assets_mode(self, multiAssetsMargin: bool):
+        """Change user's Multi-Assets mode (Multi-Assets Mode or Single-Asset Mode) on Every symbol
+
+        https://binance-docs.github.io/apidocs/futures/en/#change-multi-assets-mode-trade
+
+        """
+        params = {
+            'true' if multiAssetsMargin else 'false'
+        }
+        return self._request_futures_api('post', 'multiAssetsMargin', True, data=params)
+
+    def futures_get_multi_assets_mode(self):
+        """Get user's Multi-Assets mode (Multi-Assets Mode or Single-Asset Mode) on Every symbol
+
+        https://binance-docs.github.io/apidocs/futures/en/#get-current-multi-assets-mode-user_data
+
+        """
+        return self._request_futures_api('get', 'multiAssetsMargin', True)
 
     def futures_stream_get_listen_key(self):
         res = self._request_futures_api('post', 'listenKey', signed=False, data={})
@@ -6544,8 +6569,11 @@ class AsyncClient(BaseClient):
 
     # Market Data Endpoints
 
-    async def get_all_tickers(self) -> Dict:
-        return await self._get('ticker/price', version=self.PRIVATE_API_VERSION)
+    async def get_all_tickers(self, symbol: Optional[str] = None) -> Dict:
+        params = {}
+        if symbol:
+            params['symbol'] = symbol
+        return await self._get('ticker/price', version=self.PRIVATE_API_VERSION, data=params)
     get_all_tickers.__doc__ = Client.get_all_tickers.__doc__
 
     async def get_orderbook_tickers(self) -> Dict:
@@ -6962,7 +6990,10 @@ class AsyncClient(BaseClient):
         raise Exception("There is no entry with withdraw id", result)
     get_withdraw_history_id.__doc__ = Client.get_withdraw_history_id.__doc__
 
-    async def get_deposit_address(self, **params):
+    async def get_deposit_address(self, coin: str, network: Optional[str] = None, **params):
+        params['coin'] = coin
+        if network:
+            params['network'] = network
         return await self._request_margin_api('get', 'capital/deposit/address', True, data=params)
     get_deposit_address.__doc__ = Client.get_deposit_address.__doc__
 
@@ -7167,7 +7198,7 @@ class AsyncClient(BaseClient):
         return await self._request_margin_api('post', 'sub-account/futures/internalTransfer', True, data=params)
 
     async def get_sub_account_assets(self, **params):
-        return await self._request_margin_api('get', 'sub-account/assets', True, data=params, version='v3')
+        return await self._request_margin_api('get', 'sub-account/assets', True, data=params)
 
     async def query_subaccount_spot_summary(self, **params):
         return await self._request_margin_api('get', 'sub-account/spotSummary', True, data=params)
@@ -7350,6 +7381,15 @@ class AsyncClient(BaseClient):
 
     async def futures_get_position_mode(self, **params):
         return await self._request_futures_api('get', 'positionSide/dual', True, data=params)
+
+    async def futures_change_multi_assets_mode(self, multiAssetsMargin: bool):
+        params = {
+            'true' if multiAssetsMargin else 'false'
+        }
+        return await self._request_futures_api('post', 'multiAssetsMargin', True, data=params)
+
+    async def futures_get_multi_assets_mode(self):
+        return await self._request_futures_api('get', 'multiAssetsMargin', True)
 
     async def futures_stream_get_listen_key(self):
         res = await self._request_futures_api('post', 'listenKey', signed=False, data={})

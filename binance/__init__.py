@@ -4,8 +4,8 @@
 
 """
 
-__version__ = '1.0.5'
+__version__ = '1.0.10'
 
 from binance.client import Client, AsyncClient  # noqa
-from binance.depthcache import DepthCacheManager, OptionsDepthCacheManager  # noqa
-from binance.streams import BinanceSocketManager  # noqa
+from binance.depthcache import DepthCacheManager, OptionsDepthCacheManager, ThreadedDepthCacheManager  # noqa
+from binance.streams import BinanceSocketManager, ThreadedWebsocketManager  # noqa
