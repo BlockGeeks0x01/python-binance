@@ -8,6 +8,7 @@ from random import random
 from typing import Optional, List, Dict, Callable, Any
 
 import aiohttp
+from aiohttp import ClientWebSocketResponse
 
 from .client import AsyncClient
 from .exceptions import BinanceWebsocketUnableToConnect
@@ -46,7 +47,7 @@ class ReconnectingWebsocket:
         self._is_binary = is_binary
         self._conn = None
         self._socket = None
-        self.ws = None
+        self.ws: ClientWebSocketResponse = None
         self.ws_state = WSListenerState.INITIALISING
         self.reconnect_handle = None
         self._proxy = proxy
@@ -72,7 +73,7 @@ class ReconnectingWebsocket:
         kwargs = {'url': ws_url}
         if self._proxy:
             kwargs['proxy'] = self._proxy
-        self._conn = aiohttp.ClientSession().ws_connect(**kwargs)
+        self._conn = aiohttp.ClientSession(trust_env=True).ws_connect(**kwargs)
 
         try:
             self.ws = await self._conn.__aenter__()
@@ -92,13 +93,13 @@ class ReconnectingWebsocket:
     def _handle_message(self, evt):
         if self._is_binary:
             try:
-                evt = gzip.decompress(evt)
+                evt = gzip.decompress(evt.data)
             except (ValueError, OSError):
                 return None
         try:
-            return json.loads(evt)
+            return json.loads(evt.data)
         except ValueError:
-            self._log.debug(f'error parsing evt json:{evt}')
+            self._log.debug(f'error parsing evt json:{evt.data}')
             return None
 
     async def recv(self):
@@ -110,7 +111,7 @@ class ReconnectingWebsocket:
             if self.ws_state == WSListenerState.EXITING:
                 break
             try:
-                res = await asyncio.wait_for(self.ws.recv(), timeout=self.TIMEOUT)
+                res = await asyncio.wait_for(self.ws.receive(), timeout=self.TIMEOUT)
             except asyncio.TimeoutError:
                 logging.debug(f"no message in {self.TIMEOUT} seconds")
             except asyncio.CancelledError as e:
@@ -264,7 +265,7 @@ class BinanceSocketManager:
     WEBSOCKET_DEPTH_10 = '10'
     WEBSOCKET_DEPTH_20 = '20'
 
-    def __init__(self, client: AsyncClient, loop=None, user_timeout=KEEPALIVE_TIMEOUT):
+    def __init__(self, client: AsyncClient, loop=None, user_timeout=KEEPALIVE_TIMEOUT, proxy=None):
         """Initialise the BinanceSocketManager
 
         :param client: Binance API client
@@ -281,6 +282,7 @@ class BinanceSocketManager:
         self._loop = loop or asyncio.get_event_loop()
         self._client = client
         self._user_timeout = user_timeout
+        self._proxy = proxy
 
         self.testnet = self._client.testnet
 
@@ -300,7 +302,8 @@ class BinanceSocketManager:
                 url=self._get_stream_url(stream_url),
                 prefix=prefix,
                 exit_coro=self._exit_socket,
-                is_binary=is_binary
+                is_binary=is_binary,
+                proxy=self._proxy
             )
 
         return self._conns[path]

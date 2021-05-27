@@ -6455,8 +6455,8 @@ class AsyncClient(BaseClient):
     def _init_session(self) -> aiohttp.ClientSession:
 
         session = aiohttp.ClientSession(
-            loop=self.loop,
-            headers=self._get_headers()
+            headers=self._get_headers(),
+            trust_env=True
         )
         return session
 
@@ -6466,9 +6466,7 @@ class AsyncClient(BaseClient):
             await self.session.close()
 
     async def _request(self, method, uri: str, signed: bool, force_params: bool = False, **kwargs) -> Dict:
-
         kwargs = self._get_request_kwargs(method, signed, force_params, **kwargs)
-
         async with getattr(self.session, method)(uri, **kwargs) as response:
             self.response = response
             return await self._handle_response(response)
