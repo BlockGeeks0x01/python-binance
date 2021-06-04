@@ -4,7 +4,7 @@ import json
 import logging
 import time
 from enum import Enum
-from random import random
+from random import random, randint
 from typing import Optional, List, Dict, Callable, Any
 
 import aiohttp
@@ -22,6 +22,7 @@ class WSListenerState(Enum):
     INITIALISING = 'Initialising'
     STREAMING = 'Streaming'
     RECONNECTING = 'Reconnecting'
+    RECONNECTING_FAILED = "ReconnectingFailed"
     EXITING = 'Exiting'
 
 
@@ -51,6 +52,7 @@ class ReconnectingWebsocket:
         self.ws_state = WSListenerState.INITIALISING
         self.reconnect_handle = None
         self._proxy = proxy
+        self._topics = []
 
     async def __aenter__(self):
         await self.connect()
@@ -76,10 +78,14 @@ class ReconnectingWebsocket:
         self._conn = aiohttp.ClientSession(trust_env=True).ws_connect(**kwargs)
 
         try:
+            logging.debug("waiting connect")
             self.ws = await self._conn.__aenter__()
-        except:  # noqa
+        except Exception as e:  # noqa
+            logging.error(f"error: {e}")
+            self.ws_state = WSListenerState.RECONNECTING_FAILED
             await self._reconnect()
             return
+        logging.debug("connect successfully!")
         self.ws_state = WSListenerState.STREAMING
         self._reconnects = 0
         await self._after_connect()
@@ -101,14 +107,19 @@ class ReconnectingWebsocket:
         except ValueError:
             self._log.debug(f'error parsing evt json:{evt.data}')
             return None
+        except TypeError:
+            self._log.debug(f"invalid json object: {evt}")
+            return None
 
     async def recv(self):
         res = None
         while not res:
             if not self.ws or self.ws_state != WSListenerState.STREAMING:
+                logging.debug(f"ws_state != STREAMING, wait for reconnect")
                 await self._wait_for_reconnect()
                 break
             if self.ws_state == WSListenerState.EXITING:
+                logging.debug(f"ws_state == EXITING, break whilex")
                 break
             try:
                 res = await asyncio.wait_for(self.ws.receive(), timeout=self.TIMEOUT)
@@ -131,7 +142,8 @@ class ReconnectingWebsocket:
     async def _wait_for_reconnect(self):
         while self.ws_state == WSListenerState.RECONNECTING:
             logging.debug("reconnecting waiting for connect")
-            await asyncio.sleep(0.01)
+            # await asyncio.sleep(0.01)
+            await asyncio.sleep(3)
         if not self.ws:
             logging.debug("ignore message no ws")
         else:
@@ -142,7 +154,9 @@ class ReconnectingWebsocket:
         if msg_res:
             # cancel error timeout
             if self.reconnect_handle:
+                # logging.debug("cancel reconnect task")
                 self.reconnect_handle.cancel()
+            # logging.debug("register no_message_received_reconnect task")
             self.reconnect_handle = self._loop.call_later(
                 self.NO_MESSAGE_RECONNECT_TIMEOUT, self._no_message_received_reconnect
             )
@@ -165,6 +179,7 @@ class ReconnectingWebsocket:
     async def _reconnect(self):
         if self.ws_state == WSListenerState.RECONNECTING:
             return
+        logging.debug("start to reconnect ...")
         self.ws_state = WSListenerState.RECONNECTING
         if self.reconnect_handle:
             self.reconnect_handle.cancel()
@@ -176,10 +191,63 @@ class ReconnectingWebsocket:
                 f"waiting {reconnect_wait}"
             )
             await asyncio.sleep(reconnect_wait)
+            logging.debug("start connect...")
             await self.connect()
+            if self._topics:
+                await self.ws.send_json({
+                    "method": "SUBSCRIBE",
+                    "params": self._topics,
+                    "id": randint(1, 9999999999)
+                })
         else:
             logging.error(f'Max reconnections {self.MAX_RECONNECTS} reached:')
             raise BinanceWebsocketUnableToConnect
+
+    async def subscribe(self, topics: List[str]):
+        if not self.ws or self.ws_state != WSListenerState.STREAMING:
+            await self._wait_for_reconnect()
+        if self.ws_state == WSListenerState.EXITING:
+            raise BinanceWebsocketUnableToConnect("ws_state is exiting")
+        try:
+            await asyncio.wait_for(self.ws.send_json({
+                "method": "SUBSCRIBE",
+                "params": topics,
+                "id": randint(1, 9999999999)
+            }), timeout=self.TIMEOUT)
+        except asyncio.TimeoutError:
+            logging.debug(f"no message in {self.TIMEOUT} seconds")
+        except asyncio.CancelledError as e:
+            logging.debug(f"cancelled error {e}")
+        except asyncio.IncompleteReadError as e:
+            logging.debug(f"incomplete read error {e}")
+        except Exception as e:
+            logging.debug(f"exception {e}")
+        else:
+            self._topics.extend(topics)
+
+    async def unsubscribe(self, topics: List[str]):
+        if not self.ws or self.ws_state != WSListenerState.STREAMING:
+            await self._wait_for_reconnect()
+        if self.ws_state == WSListenerState.EXITING:
+            raise BinanceWebsocketUnableToConnect("ws_state is exiting")
+        try:
+            await asyncio.wait_for(self.ws.send_json({
+                "method": "UNSUBSCRIBE",
+                "params": topics,
+                "id": randint(1, 9999999999)
+            }), timeout=self.TIMEOUT)
+        except asyncio.TimeoutError:
+            logging.debug(f"no message in {self.TIMEOUT} seconds")
+        except asyncio.CancelledError as e:
+            logging.debug(f"cancelled error {e}")
+        except asyncio.IncompleteReadError as e:
+            logging.debug(f"incomplete read error {e}")
+        except Exception as e:
+            logging.debug(f"exception {e}")
+        else:
+            for _t in topics:
+                if _t in self._topics:
+                    self._topics.remove(_t)
 
 
 class KeepAliveWebsocket(ReconnectingWebsocket):
@@ -691,6 +759,10 @@ class BinanceSocketManager:
         """
         stream_name = '@indexPrice@1s' if fast else '@indexPrice'
         return self._get_futures_socket(symbol.lower() + stream_name, futures_type=FuturesType.COIN_M)
+
+    def multi_index_price_socket(self, symbols: List[str], fast: bool = True):
+        stream_names = [symbol.lower() + ('@indexPrice@1s' if fast else '@indexPrice') for symbol in symbols]
+        return self._get_futures_socket('/'.join(stream_names), futures_type=FuturesType.COIN_M)
 
     def symbol_mark_price_socket(self, symbol: str, fast: bool = True, futures_type: FuturesType = FuturesType.USD_M):
         """Start a websocket for a symbol's futures mark price
