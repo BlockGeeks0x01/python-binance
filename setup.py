@@ -20,14 +20,14 @@ with open("README.rst", "r") as fh:
     long_description = fh.read()
 
 setup(
-    name='python-binance',
+    name='python-binance2',
     version=version,
     packages=['binance'],
     description='Binance REST API python implementation',
     long_description=long_description,
     long_description_content_type="text/x-rst",
     url='https://github.com/sammchardy/python-binance',
-    author='Sam McHardy',
+    author='Eric Sun',
     license='MIT',
     author_email='',
     install_requires=[
