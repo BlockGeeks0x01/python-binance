@@ -48,6 +48,7 @@ class ReconnectingWebsocket:
         self._is_binary = is_binary
         self._conn = None
         self._socket = None
+        self._session = None
         self.ws: ClientWebSocketResponse = None
         self.ws_state = WSListenerState.INITIALISING
         self.reconnect_handle = None
@@ -63,10 +64,13 @@ class ReconnectingWebsocket:
             await self._exit_coro(self._path)
         self.ws_state = WSListenerState.EXITING
         if self.ws:
-            self.ws.close()
+            await self.ws.close()
         if self._conn:
             await self._conn.__aexit__(exc_type, exc_val, exc_tb)
         self.ws = None
+        if self._session:
+            await self._session.close()
+            self._session = None
 
     async def connect(self):
         await self._before_connect()
@@ -75,7 +79,8 @@ class ReconnectingWebsocket:
         kwargs = {'url': ws_url}
         if self._proxy:
             kwargs['proxy'] = self._proxy
-        self._conn = aiohttp.ClientSession(trust_env=True).ws_connect(**kwargs)
+        self._session = aiohttp.ClientSession(trust_env=True)
+        self._conn = self._session.ws_connect(**kwargs)
 
         try:
             logging.debug("waiting connect")
@@ -203,61 +208,76 @@ class ReconnectingWebsocket:
             logging.error(f'Max reconnections {self.MAX_RECONNECTS} reached:')
             raise BinanceWebsocketUnableToConnect
 
-    async def subscribe(self, topics: List[str]):
+    async def _send(self, payload) -> bool:
         if not self.ws or self.ws_state != WSListenerState.STREAMING:
             await self._wait_for_reconnect()
         if self.ws_state == WSListenerState.EXITING:
             raise BinanceWebsocketUnableToConnect("ws_state is exiting")
         try:
-            await asyncio.wait_for(self.ws.send_json({
+            await asyncio.wait_for(self.ws.send_json(payload), timeout=self.TIMEOUT)
+            return True
+        except asyncio.TimeoutError:
+            logging.debug(f"no message in {self.TIMEOUT} seconds")
+        except asyncio.CancelledError as e:
+            logging.debug(f"cancelled error {e}")
+        except asyncio.IncompleteReadError as e:
+            logging.debug(f"incomplete read error {e}")
+        except Exception as e:
+            logging.debug(f"exception {e}")
+        return False
+
+    async def subscribe(self, topics: List[str]):
+        while True:
+            result = await self._send({
                 "method": "SUBSCRIBE",
                 "params": topics,
                 "id": randint(1, 9999999999)
-            }), timeout=self.TIMEOUT)
-        except asyncio.TimeoutError:
-            logging.debug(f"no message in {self.TIMEOUT} seconds")
-        except asyncio.CancelledError as e:
-            logging.debug(f"cancelled error {e}")
-        except asyncio.IncompleteReadError as e:
-            logging.debug(f"incomplete read error {e}")
-        except Exception as e:
-            logging.debug(f"exception {e}")
-        else:
-            self._topics.extend(topics)
+            })
+            if result:
+                break
+        self._topics.extend(topics)
 
     async def unsubscribe(self, topics: List[str]):
-        if not self.ws or self.ws_state != WSListenerState.STREAMING:
-            await self._wait_for_reconnect()
-        if self.ws_state == WSListenerState.EXITING:
-            raise BinanceWebsocketUnableToConnect("ws_state is exiting")
-        try:
-            await asyncio.wait_for(self.ws.send_json({
+        while True:
+            result = await self._send({
                 "method": "UNSUBSCRIBE",
                 "params": topics,
                 "id": randint(1, 9999999999)
-            }), timeout=self.TIMEOUT)
-        except asyncio.TimeoutError:
-            logging.debug(f"no message in {self.TIMEOUT} seconds")
-        except asyncio.CancelledError as e:
-            logging.debug(f"cancelled error {e}")
-        except asyncio.IncompleteReadError as e:
-            logging.debug(f"incomplete read error {e}")
-        except Exception as e:
-            logging.debug(f"exception {e}")
-        else:
-            for _t in topics:
-                if _t in self._topics:
-                    self._topics.remove(_t)
+            })
+            if result:
+                break
+        for _t in topics:
+            if _t in self._topics:
+                self._topics.remove(_t)
+
+    async def send_request(self, params: List[str]):
+        while True:
+            result = await self._send({
+                "method": "REQUEST",
+                "params": params,
+                "id": randint(1, 9999999999)
+            })
+            if result:
+                break
 
 
 class KeepAliveWebsocket(ReconnectingWebsocket):
 
-    def __init__(self, client: AsyncClient, loop, url, keepalive_type, prefix='ws/', is_binary=False, exit_coro=None, user_timeout=None):
-        super().__init__(loop=loop, path=None, url=url, prefix=prefix, is_binary=is_binary, exit_coro=exit_coro)
+    def __init__(self, client: AsyncClient, loop, url, keepalive_type, prefix='ws/', is_binary=False, exit_coro=None, user_timeout=None, proxy=None):
+        super().__init__(loop=loop, path=None, url=url, prefix=prefix, is_binary=is_binary, exit_coro=exit_coro, proxy=proxy)
         self._keepalive_type = keepalive_type
         self._client = client
         self._user_timeout = user_timeout or KEEPALIVE_TIMEOUT
         self._timer = None
+
+    @property
+    def client(self):
+        return self._client
+
+    def get_listen_key(self):
+        if self._path:
+            return self._path
+        return None
 
     async def __aexit__(self, *args, **kwargs):
         if not self._path:
@@ -388,7 +408,8 @@ class BinanceSocketManager:
                 prefix=prefix,
                 exit_coro=self._exit_socket,
                 is_binary=is_binary,
-                user_timeout=self._user_timeout
+                user_timeout=self._user_timeout,
+                proxy=self._proxy
             )
 
         return self._conns[path]
@@ -868,6 +889,16 @@ class BinanceSocketManager:
         """
 
         return self._get_futures_socket('!bookTicker', futures_type=futures_type)
+
+    def future_depth_socket(self, symbol: str, depth: str = '10', futures_type: FuturesType = FuturesType.USD_M):
+        """Subscribe to a depth data stream
+
+        :param symbol: required
+        :type symbol: str
+        :param depth: optional Number of depth entries to return, default 10.
+        :type depth: str
+        """
+        return self._get_futures_socket(symbol.lower() + '@depth' + str(depth), futures_type=futures_type)
 
     def symbol_book_ticker_socket(self, symbol: str):
         """Start a websocket for the best bid or ask's price or quantity for a specified symbol.

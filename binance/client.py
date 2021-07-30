@@ -1,3 +1,4 @@
+import logging
 from typing import Dict, Optional, List, Tuple
 
 import aiohttp
@@ -258,7 +259,8 @@ class BaseClient:
 
         if signed:
             # generate signature
-            kwargs['data']['timestamp'] = int(time.time() * 1000 + self.timestamp_offset)
+            # kwargs['data']['timestamp'] = int(time.time() * 1000 + self.timestamp_offset)
+            kwargs['data']['timestamp'] = int(time.time() * 1000)
             kwargs['data']['signature'] = self._generate_signature(kwargs['data'])
 
             # find any requests params passed and apply them
@@ -6436,7 +6438,7 @@ class AsyncClient(BaseClient):
         super().__init__(api_key, api_secret, requests_params, tld, testnet)
 
     @classmethod
-    async def create(
+    def create(
         cls, api_key: Optional[str] = None, api_secret: Optional[str] = None,
         requests_params: Dict[str, str] = None, tld: str = 'com',
         testnet: bool = False, loop=None
@@ -6444,11 +6446,12 @@ class AsyncClient(BaseClient):
 
         self = cls(api_key, api_secret, requests_params, tld, testnet, loop)
 
-        await self.ping()
+        # await self.ping()
 
         # calculate timestamp offset between local and binance server
-        res = await self.get_server_time()
-        self.timestamp_offset = res['serverTime'] - int(time.time() * 1000)
+        # res = await self.get_server_time()
+        # self.timestamp_offset = res['serverTime'] - int(time.time() * 1000)
+        # logging.debug(f"timestamp_offset: {self.timestamp_offset}")
 
         return self
 
@@ -6464,6 +6467,7 @@ class AsyncClient(BaseClient):
         if self.session:
             assert self.session
             await self.session.close()
+            self.session = None
 
     async def _request(self, method, uri: str, signed: bool, force_params: bool = False, **kwargs) -> Dict:
         kwargs = self._get_request_kwargs(method, signed, force_params, **kwargs)
