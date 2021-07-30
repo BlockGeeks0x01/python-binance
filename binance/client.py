@@ -39,6 +39,8 @@ class BaseClient:
     FUTURES_API_VERSION2 = "v2"
     OPTIONS_API_VERSION = 'v1'
 
+    REQUEST_TIMEOUT: float = 10
+
     SYMBOL_TYPE_SPOT = 'SPOT'
 
     ORDER_STATUS_NEW = 'NEW'
@@ -247,7 +249,7 @@ class BaseClient:
     def _get_request_kwargs(self, method, signed: bool, force_params: bool = False, **kwargs) -> Dict:
 
         # set default requests timeout
-        kwargs['timeout'] = 10
+        kwargs['timeout'] = self.REQUEST_TIMEOUT
 
         # add our global requests params
         if self._requests_params:
@@ -257,22 +259,25 @@ class BaseClient:
         if data and isinstance(data, dict):
             kwargs['data'] = data
 
-        if signed:
-            # generate signature
-            # kwargs['data']['timestamp'] = int(time.time() * 1000 + self.timestamp_offset)
-            kwargs['data']['timestamp'] = int(time.time() * 1000)
-            kwargs['data']['signature'] = self._generate_signature(kwargs['data'])
-
             # find any requests params passed and apply them
             if 'requests_params' in kwargs['data']:
                 # merge requests params into kwargs
                 kwargs.update(kwargs['data']['requests_params'])
                 del(kwargs['data']['requests_params'])
 
+        if signed:
+            # generate signature
+            kwargs['data']['timestamp'] = int(time.time() * 1000)
+            kwargs['data']['signature'] = self._generate_signature(kwargs['data'])
+
         # sort get and post params to match signature order
         if data:
             # sort post params and remove any arguments with values of None
             kwargs['data'] = self._order_params(kwargs['data'])
+            # Remove any arguments with values of None.
+            null_args = [i for i, (key, value) in enumerate(kwargs['data']) if value is None]
+            for i in reversed(null_args):
+                del kwargs['data'][i]
 
         # if get request assign data array to params value for requests lib
         if data and (method == 'get' or force_params):
@@ -303,7 +308,7 @@ class Client(BaseClient):
         session.headers.update(headers)
         return session
 
-    def _request(self, method, uri: str, signed: bool, force_params: bool = False, **kwargs) -> Dict:
+    def _request(self, method, uri: str, signed: bool, force_params: bool = False, **kwargs):
 
         kwargs = self._get_request_kwargs(method, signed, force_params, **kwargs)
 
@@ -311,7 +316,7 @@ class Client(BaseClient):
         return self._handle_response(self.response)
 
     @staticmethod
-    def _handle_response(response: requests.Response) -> Dict:
+    def _handle_response(response: requests.Response):
         """Internal helper for handling API responses from the Binance server.
         Raises the appropriate exceptions when necessary; otherwise, returns the
         response.
@@ -325,7 +330,7 @@ class Client(BaseClient):
 
     def _request_api(
         self, method, path: str, signed: bool = False, version=BaseClient.PUBLIC_API_VERSION, **kwargs
-    ) -> Dict:
+    ):
         uri = self._create_api_uri(path, signed, version)
         return self._request(method, uri, signed, **kwargs)
 
@@ -363,7 +368,7 @@ class Client(BaseClient):
         uri = self._create_website_uri(path)
         return self._request(method, uri, signed, **kwargs)
 
-    def _get(self, path, signed=False, version=BaseClient.PUBLIC_API_VERSION, **kwargs) -> Dict:
+    def _get(self, path, signed=False, version=BaseClient.PUBLIC_API_VERSION, **kwargs):
         return self._request_api('get', path, signed, version, **kwargs)
 
     def _post(self, path, signed=False, version=BaseClient.PUBLIC_API_VERSION, **kwargs) -> Dict:
@@ -508,7 +513,7 @@ class Client(BaseClient):
     def ping(self) -> Dict:
         """Test connectivity to the Rest API.
 
-        https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#test-connectivity
+        https://binance-docs.github.io/apidocs/spot/en/#test-connectivity
 
         :returns: Empty array
 
@@ -524,7 +529,7 @@ class Client(BaseClient):
     def get_server_time(self) -> Dict:
         """Test connectivity to the Rest API and get the current server time.
 
-        https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#check-server-time
+        https://binance-docs.github.io/apidocs/spot/en/#check-server-time
 
         :returns: Current server time
 
@@ -541,13 +546,10 @@ class Client(BaseClient):
 
     # Market Data Endpoints
 
-    def get_all_tickers(self, symbol: Optional[str] = None) -> Dict:
-        """Latest price for a symbol or symbols.
+    def get_all_tickers(self) -> List[Dict[str, str]]:
+        """Latest price for all symbols.
 
         https://binance-docs.github.io/apidocs/spot/en/#symbol-price-ticker
-
-        :param symbol: optional
-        :type symbol: str
 
         :returns: List of market tickers
 
@@ -567,10 +569,7 @@ class Client(BaseClient):
         :raises: BinanceRequestException, BinanceAPIException
 
         """
-        params = {}
-        if symbol:
-            params['symbol'] = symbol
-        return self._get('ticker/price', version=self.PRIVATE_API_VERSION, data=params)
+        return self._get('ticker/price', version=self.PRIVATE_API_VERSION)
 
     def get_orderbook_tickers(self) -> Dict:
         """Best price/qty on the order book for all symbols.
@@ -609,7 +608,7 @@ class Client(BaseClient):
     def get_order_book(self, **params) -> Dict:
         """Get the Order Book for the market
 
-        https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#order-book
+        https://binance-docs.github.io/apidocs/spot/en/#order-book
 
         :param symbol: required
         :type symbol: str
@@ -646,7 +645,7 @@ class Client(BaseClient):
     def get_recent_trades(self, **params) -> Dict:
         """Get recent trades (up to last 500).
 
-        https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#recent-trades-list
+        https://binance-docs.github.io/apidocs/spot/en/#recent-trades-list
 
         :param symbol: required
         :type symbol: str
@@ -676,7 +675,7 @@ class Client(BaseClient):
     def get_historical_trades(self, **params) -> Dict:
         """Get older trades.
 
-        https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#old-trade-lookup
+        https://binance-docs.github.io/apidocs/spot/en/#old-trade-lookup
 
         :param symbol: required
         :type symbol: str
@@ -709,7 +708,7 @@ class Client(BaseClient):
         """Get compressed, aggregate trades. Trades that fill at the time,
         from the same order, with the same price will have the quantity aggregated.
 
-        https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#compressedaggregate-trades-list
+        https://binance-docs.github.io/apidocs/spot/en/#compressed-aggregate-trades-list
 
         :param symbol: required
         :type symbol: str
@@ -768,7 +767,7 @@ class Client(BaseClient):
         return the first trade occurring later than this time.
         :type start_str: str|int
         :param last_id: aggregate trade ID of the last known aggregate trade.
-        Not a regular trade ID. See https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#compressedaggregate-trades-list.
+        Not a regular trade ID. See https://binance-docs.github.io/apidocs/spot/en/#compressed-aggregate-trades-list
 
         :returns: an iterator of JSON objects, one per trade. The format of
         each object is identical to Client.aggregate_trades().
@@ -830,7 +829,7 @@ class Client(BaseClient):
     def get_klines(self, **params) -> Dict:
         """Kline/candlestick bars for a symbol. Klines are uniquely identified by their open time.
 
-        https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#klinecandlestick-data
+        https://binance-docs.github.io/apidocs/spot/en/#kline-candlestick-data
 
         :param symbol: required
         :type symbol: str
@@ -1109,7 +1108,7 @@ class Client(BaseClient):
     def get_avg_price(self, **params):
         """Current average price for a symbol.
 
-        https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#current-average-price
+        https://binance-docs.github.io/apidocs/spot/en/#current-average-price
 
         :param symbol:
         :type symbol: str
@@ -1128,7 +1127,7 @@ class Client(BaseClient):
     def get_ticker(self, **params):
         """24 hour price change statistics.
 
-        https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#24hr-ticker-price-change-statistics
+        https://binance-docs.github.io/apidocs/spot/en/#24hr-ticker-price-change-statistics
 
         :param symbol:
         :type symbol: str
@@ -1189,7 +1188,7 @@ class Client(BaseClient):
     def get_symbol_ticker(self, **params):
         """Latest price for a symbol or symbols.
 
-        https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#24hr-ticker-price-change-statistics
+        https://binance-docs.github.io/apidocs/spot/en/#symbol-price-ticker
 
         :param symbol:
         :type symbol: str
@@ -1226,7 +1225,7 @@ class Client(BaseClient):
     def get_orderbook_ticker(self, **params):
         """Latest price for a symbol or symbols.
 
-        https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#symbol-order-book-ticker
+        https://binance-docs.github.io/apidocs/spot/en/#symbol-order-book-ticker
 
         :param symbol:
         :type symbol: str
@@ -1276,7 +1275,7 @@ class Client(BaseClient):
 
         Any order with an icebergQty MUST have timeInForce set to GTC.
 
-        https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#new-order--trade
+        https://binance-docs.github.io/apidocs/spot/en/#new-order-trade
 
         :param symbol: required
         :type symbol: str
@@ -1585,7 +1584,7 @@ class Client(BaseClient):
     def create_oco_order(self, **params):
         """Send in a new OCO order
 
-        https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#new-oco-trade
+        https://binance-docs.github.io/apidocs/spot/en/#new-oco-trade
 
         :param symbol: required
         :type symbol: str
@@ -1731,7 +1730,7 @@ class Client(BaseClient):
     def create_test_order(self, **params):
         """Test new order creation and signature/recvWindow long. Creates and validates a new order but does not send it into the matching engine.
 
-        https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#test-new-order-trade
+        https://binance-docs.github.io/apidocs/spot/en/#test-new-order-trade
 
         :param symbol: required
         :type symbol: str
@@ -1769,7 +1768,7 @@ class Client(BaseClient):
     def get_order(self, **params):
         """Check an order's status. Either orderId or origClientOrderId must be sent.
 
-        https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#query-order-user_data
+        https://binance-docs.github.io/apidocs/spot/en/#query-order-user_data
 
         :param symbol: required
         :type symbol: str
@@ -1808,12 +1807,16 @@ class Client(BaseClient):
     def get_all_orders(self, **params):
         """Get all account orders; active, canceled, or filled.
 
-        https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#all-orders-user_data
+        https://binance-docs.github.io/apidocs/spot/en/#all-orders-user_data
 
         :param symbol: required
         :type symbol: str
         :param orderId: The unique order id
         :type orderId: int
+        :param startTime: optional
+        :type startTime: int
+        :param endTime: optional
+        :type endTime: int
         :param limit: Default 500; max 500.
         :type limit: int
         :param recvWindow: the number of milliseconds the request is valid for
@@ -1849,7 +1852,7 @@ class Client(BaseClient):
     def cancel_order(self, **params):
         """Cancel an active order. Either orderId or origClientOrderId must be sent.
 
-        https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#cancel-order-trade
+        https://binance-docs.github.io/apidocs/spot/en/#cancel-order-trade
 
         :param symbol: required
         :type symbol: str
@@ -1881,7 +1884,7 @@ class Client(BaseClient):
     def get_open_orders(self, **params):
         """Get all open orders on a symbol.
 
-        https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#current-open-orders-user_data
+        https://binance-docs.github.io/apidocs/spot/en/#current-open-orders-user_data
 
         :param symbol: optional
         :type symbol: str
@@ -1919,7 +1922,7 @@ class Client(BaseClient):
     def get_account(self, **params):
         """Get current account information.
 
-        https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#account-information-user_data
+        https://binance-docs.github.io/apidocs/spot/en/#account-information-user_data
 
         :param recvWindow: the number of milliseconds the request is valid for
         :type recvWindow: int
@@ -1958,8 +1961,6 @@ class Client(BaseClient):
     def get_asset_balance(self, asset, **params):
         """Get current asset balance.
 
-        https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#account-information-user_data
-
         :param asset: required
         :type asset: str
         :param recvWindow: the number of milliseconds the request is valid for
@@ -1989,10 +1990,14 @@ class Client(BaseClient):
     def get_my_trades(self, **params):
         """Get trades for a specific symbol.
 
-        https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#account-trade-list-user_data
+        https://binance-docs.github.io/apidocs/spot/en/#account-trade-list-user_data
 
         :param symbol: required
         :type symbol: str
+        :param startTime: optional
+        :type startTime: int
+        :param endTime: optional
+        :type endTime: int
         :param limit: Default 500; max 500.
         :type limit: int
         :param fromId: TradeId to fetch from. Default gets most recent trades.
@@ -2642,7 +2647,7 @@ class Client(BaseClient):
         """
         result = self.get_withdraw_history(**params)
 
-        for entry in result['withdrawList']:
+        for entry in result:
             if 'id' in entry and entry['id'] == withdraw_id:
                 return entry
 
@@ -2688,7 +2693,7 @@ class Client(BaseClient):
 
         Can be used to keep the user stream alive.
 
-        https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#start-user-data-stream-user_stream
+        https://binance-docs.github.io/apidocs/spot/en/#listen-key-spot
 
         :returns: API response
 
@@ -2707,7 +2712,7 @@ class Client(BaseClient):
     def stream_keepalive(self, listenKey):
         """PING a user data stream to prevent a time out.
 
-        https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#keepalive-user-data-stream-user_stream
+        https://binance-docs.github.io/apidocs/spot/en/#listen-key-spot
 
         :param listenKey: required
         :type listenKey: str
@@ -2729,7 +2734,7 @@ class Client(BaseClient):
     def stream_close(self, listenKey):
         """Close out a user data stream.
 
-        https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#close-user-data-stream-user_stream
+        https://binance-docs.github.io/apidocs/spot/en/#listen-key-spot
 
         :param listenKey: required
         :type listenKey: str
@@ -5242,15 +5247,23 @@ class Client(BaseClient):
         https://binance-docs.github.io/apidocs/futures/en/#get-all-liquidation-orders-market_data
 
         """
-        return self._request_futures_api('get', 'ticker/allForceOrders', data=params)
+        return self._request_futures_api('get', 'forceOrders', signed=True, data=params)
+
+    def futures_adl_quantile_estimate(self, **params):
+        """Get Position ADL Quantile Estimate
+
+        https://binance-docs.github.io/apidocs/futures/en/#position-adl-quantile-estimation-user_data
+
+        """
+        return self._request_futures_api('get', 'adlQuantile', signed=True, data=params)
 
     def futures_open_interest(self, **params):
         """Get present open interest of a specific symbol.
 
-        https://binance-docs.github.io/apidocs/futures/en/#open-interest-market_data
+        https://binance-docs.github.io/apidocs/futures/en/#open-interest
 
         """
-        return self._request_futures_api('get', 'ticker/openInterest', data=params)
+        return self._request_futures_api('get', 'openInterest', data=params)
 
     def futures_open_interest_hist(self, **params):
         """Get open interest statistics of a specific symbol.
@@ -5610,10 +5623,10 @@ class Client(BaseClient):
     def futures_coin_liquidation_orders(self, **params):
         """Get all liquidation orders
 
-        https://binance-docs.github.io/apidocs/delivery/en/#get-all-liquidation-orders
+        https://binance-docs.github.io/apidocs/delivery/en/#user-39-s-force-orders-user_data
 
         """
-        return self._request_futures_coin_api("get", "allForceOrders", data=params)
+        return self._request_futures_coin_api("get", "forceOrders", signed=True, data=params)
 
     def futures_coin_open_interest(self, **params):
         """Get present open interest of a specific symbol.
@@ -5666,6 +5679,21 @@ class Client(BaseClient):
 
         """
         return self._request_futures_coin_api("post", "order", True, data=params)
+
+    def futures_coin_place_batch_order(self, **params):
+        """Send in new orders.
+
+        https://binance-docs.github.io/apidocs/delivery/en/#place-multiple-orders-trade
+
+        To avoid modifying the existing signature generation and parameter order logic,
+        the url encoding is done on the special query param, batchOrders, in the early stage.
+
+        """
+        query_string = urlencode(params)
+        query_string = query_string.replace('%27', '%22')
+        params['batchOrders'] = query_string[12:]
+
+        return self._request_futures_coin_api('post', 'batchOrders', True, data=params)
 
     def futures_coin_get_order(self, **params):
         """Check an order's status.
@@ -6475,7 +6503,7 @@ class AsyncClient(BaseClient):
             self.response = response
             return await self._handle_response(response)
 
-    async def _handle_response(self, response: aiohttp.ClientResponse) -> Dict:
+    async def _handle_response(self, response: aiohttp.ClientResponse):
         """Internal helper for handling API responses from the Binance server.
         Raises the appropriate exceptions when necessary; otherwise, returns the
         response.
@@ -6488,7 +6516,7 @@ class AsyncClient(BaseClient):
             txt = await response.text()
             raise BinanceRequestException(f'Invalid Response: {txt}')
 
-    async def _request_api(self, method, path, signed=False, version=BaseClient.PUBLIC_API_VERSION, **kwargs) -> Dict:
+    async def _request_api(self, method, path, signed=False, version=BaseClient.PUBLIC_API_VERSION, **kwargs):
         uri = self._create_api_uri(path, signed, version)
         return await self._request(method, uri, signed, **kwargs)
 
@@ -6526,7 +6554,7 @@ class AsyncClient(BaseClient):
         uri = self._create_website_uri(path)
         return await self._request(method, uri, signed, **kwargs)
 
-    async def _get(self, path, signed=False, version=BaseClient.PUBLIC_API_VERSION, **kwargs) -> Dict:
+    async def _get(self, path, signed=False, version=BaseClient.PUBLIC_API_VERSION, **kwargs):
         return await self._request_api('get', path, signed, version, **kwargs)
 
     async def _post(self, path, signed=False, version=BaseClient.PUBLIC_API_VERSION, **kwargs) -> Dict:
@@ -6571,7 +6599,7 @@ class AsyncClient(BaseClient):
 
     # Market Data Endpoints
 
-    async def get_all_tickers(self, symbol: Optional[str] = None) -> Dict:
+    async def get_all_tickers(self, symbol: Optional[str] = None) -> List[Dict[str, str]]:
         params = {}
         if symbol:
             params['symbol'] = symbol
@@ -6985,7 +7013,7 @@ class AsyncClient(BaseClient):
     async def get_withdraw_history_id(self, withdraw_id, **params):
         result = await self.get_withdraw_history(**params)
 
-        for entry in result['withdrawList']:
+        for entry in result:
             if 'id' in entry and entry['id'] == withdraw_id:
                 return entry
 
@@ -7307,10 +7335,13 @@ class AsyncClient(BaseClient):
         return await self._request_futures_api('get', 'ticker/bookTicker', data=params)
 
     async def futures_liquidation_orders(self, **params):
-        return await self._request_futures_api('get', 'ticker/allForceOrders', data=params)
+        return await self._request_futures_api('get', 'forceOrders', signed=True, data=params)
+
+    async def futures_adl_quantile_estimate(self, **params):
+        return await self._request_futures_api('get', 'adlQuantile', signed=True, data=params)
 
     async def futures_open_interest(self, **params):
-        return await self._request_futures_api('get', 'ticker/openInterest', data=params)
+        return await self._request_futures_api('get', 'openInterest', data=params)
 
     async def futures_open_interest_hist(self, **params):
         return await self._request_futures_data_api('get', 'openInterestHist', data=params)
@@ -7460,7 +7491,7 @@ class AsyncClient(BaseClient):
         return await self._request_futures_coin_api("get", "ticker/bookTicker", data=params)
 
     async def futures_coin_liquidation_orders(self, **params):
-        return await self._request_futures_coin_api("get", "allForceOrders", data=params)
+        return await self._request_futures_coin_api("get", "forceOrders", signed=True, data=params)
 
     async def futures_coin_open_interest(self, **params):
         return await self._request_futures_coin_api("get", "openInterest", data=params)
@@ -7475,7 +7506,6 @@ class AsyncClient(BaseClient):
 
     async def new_transfer_history(self, **params):
         return await self._request_margin_api("get", "asset/transfer", True, data=params)
-        # return await self._request_margin_api("get", "futures/transfer", True, data=params)
 
     async def universal_transfer(self, **params):
         return await self._request_margin_api(
@@ -7484,6 +7514,13 @@ class AsyncClient(BaseClient):
 
     async def futures_coin_create_order(self, **params):
         return await self._request_futures_coin_api("post", "order", True, data=params)
+
+    async def futures_coin_place_batch_order(self, **params):
+        query_string = urlencode(params)
+        query_string = query_string.replace('%27', '%22')
+        params['batchOrders'] = query_string[12:]
+
+        return await self._request_futures_coin_api('post', 'batchOrders', True, data=params)
 
     async def futures_coin_get_order(self, **params):
         return await self._request_futures_coin_api("get", "order", True, data=params)

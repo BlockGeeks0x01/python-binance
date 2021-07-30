@@ -26,6 +26,14 @@ class WSListenerState(Enum):
     EXITING = 'Exiting'
 
 
+class BinanceSocketType(str, Enum):
+    SPOT = 'Spot'
+    USD_M_FUTURES = 'USD_M_Futures'
+    COIN_M_FUTURES = 'Coin_M_Futures'
+    OPTIONS = 'Vanilla_Options'
+    ACCOUNT = 'Account'
+
+
 class ReconnectingWebsocket:
 
     MAX_RECONNECTS = 5
@@ -49,11 +57,12 @@ class ReconnectingWebsocket:
         self._conn = None
         self._socket = None
         self._session = None
-        self.ws: ClientWebSocketResponse = None
+        self.ws: Optional[ClientWebSocketResponse] = None
         self.ws_state = WSListenerState.INITIALISING
         self.reconnect_handle = None
         self._proxy = proxy
         self._topics = []
+        self._queue = asyncio.Queue(loop=self._loop)
 
     async def __aenter__(self):
         await self.connect()
@@ -94,6 +103,7 @@ class ReconnectingWebsocket:
         self.ws_state = WSListenerState.STREAMING
         self._reconnects = 0
         await self._after_connect()
+        self._loop.call_soon_threadsafe(asyncio.create_task, self._read_loop())
 
     async def _before_connect(self):
         pass
@@ -116,56 +126,65 @@ class ReconnectingWebsocket:
             self._log.debug(f"invalid json object: {evt}")
             return None
 
-    async def recv(self):
-        res = None
-        while not res:
+    async def _read_loop(self):
+        while True:
+            res = None
             if not self.ws or self.ws_state != WSListenerState.STREAMING:
                 logging.debug(f"ws_state != STREAMING, wait for reconnect")
                 await self._wait_for_reconnect()
                 break
             if self.ws_state == WSListenerState.EXITING:
-                logging.debug(f"ws_state == EXITING, break whilex")
+                logging.debug(f"ws_state == EXITING, break while")
                 break
+            if self.ws.closed:
+                try:
+                    await self._reconnect()
+                except BinanceWebsocketUnableToConnect:
+                    return {
+                        'e': 'error',
+                        'm': 'Max reconnect retries reached'
+                    }
+                else:
+                    break
             try:
                 res = await asyncio.wait_for(self.ws.receive(), timeout=self.TIMEOUT)
             except asyncio.TimeoutError:
                 logging.debug(f"no message in {self.TIMEOUT} seconds")
             except asyncio.CancelledError as e:
                 logging.debug(f"cancelled error {e}")
+                break
             except asyncio.IncompleteReadError as e:
                 logging.debug(f"incomplete read error {e}")
             except Exception as e:
                 logging.debug(f"exception {e}")
+                break
             else:
-                if self.ws_state == WSListenerState.EXITING:
+                if self.ws_state in (WSListenerState.EXITING, WSListenerState.RECONNECTING):
                     break
-                res = await self._try_handle_msg(res)
-                if self.ws_state == WSListenerState.EXITING:
+                res = self._handle_message(res)
+                if self.ws_state in (WSListenerState.EXITING, WSListenerState.RECONNECTING):
                     break
+
+            if res and self._queue.qsize() < 100:
+                await self._queue.put(res)
+
+    async def recv(self):
+        res = None
+        while not res:
+            try:
+                res = await asyncio.wait_for(self._queue.get(), timeout=self.TIMEOUT)
+            except asyncio.TimeoutError:
+                logging.debug(f"no message in {self.TIMEOUT} seconds")
         return res
 
     async def _wait_for_reconnect(self):
         while self.ws_state == WSListenerState.RECONNECTING:
             logging.debug("reconnecting waiting for connect")
-            # await asyncio.sleep(0.01)
-            await asyncio.sleep(3)
+            await asyncio.sleep(1)
         if not self.ws:
             logging.debug("ignore message no ws")
         else:
             logging.debug(f"ignore message {self.ws_state}")
-
-    async def _try_handle_msg(self, res):
-        msg_res = self._handle_message(res)
-        if msg_res:
-            # cancel error timeout
-            if self.reconnect_handle:
-                # logging.debug("cancel reconnect task")
-                self.reconnect_handle.cancel()
-            # logging.debug("register no_message_received_reconnect task")
-            self.reconnect_handle = self._loop.call_later(
-                self.NO_MESSAGE_RECONNECT_TIMEOUT, self._no_message_received_reconnect
-            )
-        return msg_res
 
     def _get_reconnect_wait(self, attempts: int) -> int:
         expo = 2 ** attempts
@@ -186,8 +205,6 @@ class ReconnectingWebsocket:
             return
         logging.debug("start to reconnect ...")
         self.ws_state = WSListenerState.RECONNECTING
-        if self.reconnect_handle:
-            self.reconnect_handle.cancel()
         await self.before_reconnect()
         if self._reconnects < self.MAX_RECONNECTS:
             reconnect_wait = self._get_reconnect_wait(self._reconnects)
@@ -262,7 +279,6 @@ class ReconnectingWebsocket:
 
 
 class KeepAliveWebsocket(ReconnectingWebsocket):
-
     def __init__(self, client: AsyncClient, loop, url, keepalive_type, prefix='ws/', is_binary=False, exit_coro=None, user_timeout=None, proxy=None):
         super().__init__(loop=loop, path=None, url=url, prefix=prefix, is_binary=is_binary, exit_coro=exit_coro, proxy=proxy)
         self._keepalive_type = keepalive_type
@@ -382,9 +398,13 @@ class BinanceSocketManager:
             stream_url = self.STREAM_TESTNET_URL
         return stream_url
 
-    def _get_socket(self, path: str, stream_url: Optional[str] = None, prefix: str = 'ws/', is_binary: bool = False):
-        if path not in self._conns:
-            self._conns[path] = ReconnectingWebsocket(
+    def _get_socket(
+        self, path: str, stream_url: Optional[str] = None, prefix: str = 'ws/', is_binary: bool = False,
+        socket_type: BinanceSocketType = BinanceSocketType.SPOT
+    ) -> str:
+        conn_id = f'{socket_type}_{path}'
+        if conn_id not in self._conns:
+            self._conns[conn_id] = ReconnectingWebsocket(
                 loop=self._loop,
                 path=path,
                 url=self._get_stream_url(stream_url),
@@ -394,13 +414,14 @@ class BinanceSocketManager:
                 proxy=self._proxy
             )
 
-        return self._conns[path]
+        return self._conns[conn_id]
 
     def _get_account_socket(
         self, path: str, stream_url: Optional[str] = None, prefix: str = 'ws/', is_binary: bool = False
     ):
-        if path not in self._conns:
-            self._conns[path] = KeepAliveWebsocket(
+        conn_id = f'{BinanceSocketType.ACCOUNT}_{path}'
+        if conn_id not in self._conns:
+            self._conns[conn_id] = KeepAliveWebsocket(
                 client=self._client,
                 loop=self._loop,
                 url=self._get_stream_url(stream_url),
@@ -412,9 +433,10 @@ class BinanceSocketManager:
                 proxy=self._proxy
             )
 
-        return self._conns[path]
+        return self._conns[conn_id]
 
     def _get_futures_socket(self, path: str, futures_type: FuturesType, prefix: str = 'stream?streams='):
+        socket_type: BinanceSocketType = BinanceSocketType.USD_M_FUTURES
         if futures_type == FuturesType.USD_M:
             stream_url = self.FSTREAM_URL
             if self.testnet:
@@ -423,13 +445,13 @@ class BinanceSocketManager:
             stream_url = self.DSTREAM_URL
             if self.testnet:
                 stream_url = self.DSTREAM_TESTNET_URL
-        return self._get_socket(path, stream_url, prefix)
+        return self._get_socket(path, stream_url, prefix, socket_type=socket_type)
 
     def _get_options_socket(self, path: str, prefix: str = 'ws/'):
         stream_url = self.VSTREAM_URL
         if self.testnet:
             stream_url = self.VSTREAM_TESTNET_URL
-        return self._get_socket(path, stream_url, prefix, is_binary=True)
+        return self._get_socket(path, stream_url, prefix, is_binary=True, socket_type=BinanceSocketType.OPTIONS)
 
     async def _exit_socket(self, path: str):
         await self._stop_socket(path)
@@ -675,6 +697,35 @@ class BinanceSocketManager:
         """
         return self._get_futures_socket(symbol.lower() + '@aggTrade', futures_type=futures_type)
 
+    def symbol_miniticker_socket(self, symbol: str):
+        """Start a websocket for a symbol's miniTicker data
+
+                https://binance-docs.github.io/apidocs/spot/en/#individual-symbol-mini-ticker-stream
+
+                :param symbol: required
+                :type symbol: str
+
+                :returns: connection key string if successful, False otherwise
+
+                Message Format
+
+                .. code-block:: python
+
+                    {
+                        "e": "24hrMiniTicker",  // Event type
+                        "E": 123456789,         // Event time
+                        "s": "BNBBTC",          // Symbol
+                        "c": "0.0025",          // Close price
+                        "o": "0.0010",          // Open price
+                        "h": "0.0025",          // High price
+                        "l": "0.0010",          // Low price
+                        "v": "10000",           // Total traded base asset volume
+                        "q": "18"               // Total traded quote asset volume
+                    }
+
+                """
+        return self._get_socket(symbol.lower() + '@miniTicker')
+
     def symbol_ticker_socket(self, symbol: str):
         """Start a websocket for a symbol's ticker data
 
@@ -724,9 +775,6 @@ class BinanceSocketManager:
         By default all markets are included in an array.
 
         https://github.com/binance-exchange/binance-official-api-docs/blob/master/web-socket-streams.md#all-market-tickers-stream
-
-        :param coro: callback function to handle messages
-        :type coro: function
 
         :returns: connection key string if successful, False otherwise
 
@@ -897,6 +945,7 @@ class BinanceSocketManager:
         :type symbol: str
         :param depth: optional Number of depth entries to return, default 10.
         :type depth: str
+        :param futures_type:
         """
         return self._get_futures_socket(symbol.lower() + '@depth' + str(depth), futures_type=futures_type)
 
@@ -1137,7 +1186,7 @@ class ThreadedWebsocketManager(ThreadedApiManager):
 
     async def _before_socket_listener_start(self):
         assert self._client
-        self._bsm = BinanceSocketManager(self._client, self._loop)
+        self._bsm = BinanceSocketManager(client=self._client, loop=self._loop)
 
     def _start_async_socket(
         self, callback: Callable, socket_name: str, params: Dict[str, Any], path: Optional[str] = None
@@ -1147,7 +1196,7 @@ class ThreadedWebsocketManager(ThreadedApiManager):
         socket = getattr(self._bsm, socket_name)(**params)
         path = path or socket._path  # noqa
         self._socket_running[path] = True
-        self._loop.call_soon(asyncio.create_task, self.start_listener(socket, socket._path, callback))
+        self._loop.call_soon_threadsafe(asyncio.create_task, self.start_listener(socket, socket._path, callback))
         return path
 
     def start_depth_socket(
@@ -1205,10 +1254,19 @@ class ThreadedWebsocketManager(ThreadedApiManager):
     ) -> str:
         return self._start_async_socket(
             callback=callback,
-            socket_name='aggtrade_socket',
+            socket_name='aggtrade_futures_socket',
             params={
                 'symbol': symbol,
                 'futures_type': futures_type,
+            }
+        )
+
+    def start_symbol_miniticker_socket(self, callback: Callable, symbol: str) -> str:
+        return self._start_async_socket(
+            callback=callback,
+            socket_name='symbol_miniticker_socket',
+            params={
+                'symbol': symbol,
             }
         )
 
@@ -1335,7 +1393,7 @@ class ThreadedWebsocketManager(ThreadedApiManager):
     ) -> str:
         return self._start_async_socket(
             callback=callback,
-            socket_name='options_multiplex_socket',
+            socket_name='futures_multiplex_socket',
             params={
                 'streams': streams,
                 'futures_type': futures_type
