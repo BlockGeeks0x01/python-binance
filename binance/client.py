@@ -86,9 +86,10 @@ class BaseClient:
     FUTURE_ORDER_TYPE_TAKE_PROFIT_MARKET = 'TAKE_PROFIT_MARKET'
     FUTURE_ORDER_TYPE_LIMIT_MAKER = 'LIMIT_MAKER'
 
-    TIME_IN_FORCE_GTC = 'GTC'  # Good till cancelled
-    TIME_IN_FORCE_IOC = 'IOC'  # Immediate or cancel
-    TIME_IN_FORCE_FOK = 'FOK'  # Fill or kill
+    TIME_IN_FORCE_GTC = 'GTC'  # Good till cancelled    成交为止
+    TIME_IN_FORCE_IOC = 'IOC'  # Immediate or cancel    无法立即成交(吃单)的部分就撤销
+    TIME_IN_FORCE_FOK = 'FOK'  # Fill or kill   无法全部立即成交就撤销
+    TIME_IN_FORCE_GTX = "GTX"  # Good Till Crossing 无法成为挂单方就撤销
 
     ORDER_RESP_TYPE_ACK = 'ACK'
     ORDER_RESP_TYPE_RESULT = 'RESULT'
@@ -6929,6 +6930,9 @@ class AsyncClient(BaseClient):
     async def cancel_order(self, **params):
         return await self._delete('order', True, data=params)
     cancel_order.__doc__ = Client.cancel_order.__doc__
+
+    async def cancel_all_orders(self, **params):
+        return await self._delete('openOrders', True, data=params)
 
     async def get_open_orders(self, **params):
         return await self._get('openOrders', True, data=params)
